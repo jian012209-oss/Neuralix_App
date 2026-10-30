@@ -45,19 +45,19 @@ function setCookie(req, res, value, maxAgeSec) {
   res.setHeader("Set-Cookie", prev ? [].concat(prev, cookie) : cookie);
 }
 
-function startSession(req, res, userId) {
+async function startSession(req, res, userId) {
   const token = crypto.randomBytes(32).toString("base64url");
   const now = Date.now();
-  q.createSession.run(sha256(token), userId, now, now + SESSION_DAYS * 864e5);
+  await q.createSession.run(sha256(token), userId, now, now + SESSION_DAYS * 864e5);
   setCookie(req, res, token, SESSION_DAYS * 86400);
 }
 
 export const isPremium = (u) => !!u && Number(u.premium_until) > Date.now();
 export const isAdmin = (u) => !!u && config.adminEmails.includes(String(u.email).toLowerCase());
 
-export function loadUser(req) {
+export async function loadUser(req) {
   const token = readCookie(req, COOKIE);
-  req.user = token ? q.sessionUser.get(sha256(token), Date.now()) || null : null;
+  req.user = token ? (await q.sessionUser.get(sha256(token), Date.now())) || null : null;
 }
 
 export function requireUser(req) {
@@ -80,9 +80,16 @@ export function mountAuth(app) {
     if (name.length < 2) throw new HttpError(400, "Enter your name (at least 2 characters).");
     if (!EMAIL_RX.test(email) || email.length > 200) throw new HttpError(400, "Enter a valid email address.");
     if (password.length < 8 || password.length > 128) throw new HttpError(400, "Use a password with at least 8 characters.");
-    if (q.userByEmail.get(email)) throw new HttpError(409, "An account with this email already exists. Log in instead.");
-    const info = q.createUser.run(email, name, await hashPassword(password), Date.now());
-    startSession(req, res, Number(info.lastInsertRowid));
+    const taken = new HttpError(409, "An account with this email already exists. Log in instead.");
+    if (await q.userByEmail.get(email)) throw taken;
+    let info;
+    try {
+      info = await q.createUser.run(email, name, await hashPassword(password), Date.now());
+    } catch (e) {
+      if (/UNIQUE/i.test(e.message)) throw taken; // two sign-ups with the same email at the same moment
+      throw e;
+    }
+    await startSession(req, res, Number(info.lastInsertRowid));
     res.json({ ok: true }, 201);
   });
 
@@ -90,16 +97,16 @@ export function mountAuth(app) {
     const body = await req.json();
     const email = String(body.email || "").trim().toLowerCase();
     const password = String(body.password || "");
-    const user = q.userByEmail.get(email);
+    const user = await q.userByEmail.get(email);
     const ok = await checkPassword(password, user ? user.pass_hash : DUMMY_HASH);
     if (!user || !ok) throw new HttpError(401, "That email and password don't match. Try again.");
-    startSession(req, res, user.id);
+    await startSession(req, res, user.id);
     res.json({ ok: true });
   });
 
-  app.post("/api/auth/logout", (req, res) => {
+  app.post("/api/auth/logout", async (req, res) => {
     const token = readCookie(req, COOKIE);
-    if (token) q.deleteSession.run(sha256(token));
+    if (token) await q.deleteSession.run(sha256(token));
     setCookie(req, res, "", 0);
     res.json({ ok: true });
   });

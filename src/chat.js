@@ -1,11 +1,12 @@
 import crypto from "node:crypto";
 import { config, MODELS } from "./config.js";
-import { q, dayKey } from "./db.js";
+import { db, q, dayKey, countUsage } from "./db.js";
 import { requireUser, isPremium } from "./auth.js";
 import { HttpError } from "./http.js";
 import { rateLimit } from "./ratelimit.js";
 import { streamChat, AiError } from "./ai.js";
 
+const UNLIMITED = 1e12;
 const MAX_IMAGES = 4;
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 const IMAGE_RX = /^data:image\/(png|jpeg|webp|gif);base64,([A-Za-z0-9+/=]+)$/;
@@ -37,8 +38,9 @@ function systemPrompt(user, modelKey) {
   return lines.join("\n");
 }
 
-function buildHistory(conversationId) {
-  const rows = q.recentMessages.all(conversationId, 24).reverse();
+// recentRows: the newest messages first, as q.recentMessages returns them.
+function buildHistory(recentRows) {
+  const rows = recentRows.slice().reverse();
   const out = [];
   let total = 0;
   for (let i = rows.length - 1; i >= 0; i--) {
@@ -56,18 +58,23 @@ function buildHistory(conversationId) {
 }
 
 export function mountChat(app) {
-  app.get("/api/conversations", requireUser, (req, res) => {
-    res.json({ conversations: q.listConversations.all(req.user.id) });
+  app.get("/api/conversations", requireUser, async (req, res) => {
+    res.json({ conversations: await q.listConversations.all(req.user.id) });
   });
 
-  app.get("/api/conversations/:id", requireUser, (req, res) => {
-    const c = q.conversation.get(req.params.id, req.user.id);
+  app.get("/api/conversations/:id", requireUser, async (req, res) => {
+    // The chat and its messages in one round trip; the messages are only shown if the chat is this member's.
+    const [conv, msgs] = await db.batch([q.conversation.bind(req.params.id, req.user.id), q.messages.bind(req.params.id)]);
+    const c = conv.rows[0];
     if (!c) throw new HttpError(404, "That chat doesn't exist anymore.");
-    res.json({ conversation: { id: c.id, title: c.title, updated_at: c.updated_at }, messages: q.messages.all(c.id) });
+    res.json({ conversation: { id: c.id, title: c.title, updated_at: c.updated_at }, messages: msgs.rows });
   });
 
-  app.delete("/api/conversations/:id", requireUser, (req, res) => {
-    q.deleteConversation.run(req.params.id, req.user.id);
+  app.delete("/api/conversations/:id", requireUser, async (req, res) => {
+    await db.batch([
+      q.deleteConversationMessages.bind(req.params.id, req.user.id),
+      q.deleteConversation.bind(req.params.id, req.user.id)
+    ], { transaction: true });
     res.json({ ok: true });
   });
 
@@ -93,28 +100,37 @@ async function handleChat(req, res) {
     if (Math.floor(m[2].length * 0.75) > MAX_IMAGE_BYTES) throw new HttpError(400, "Each image must be under 4 MB.");
   }
   const today = dayKey();
-  if (images.length && !premium) {
-    const used = q.usage.get(user.id, today)?.images || 0;
-    if (used + images.length > config.plans.freeImagesPerDay) {
-      throw new HttpError(403, `Free accounts can upload ${config.plans.freeImagesPerDay} images per day.`, { code: "image_limit", used });
-    }
+
+  // An existing chat and its recent messages, in one round trip.
+  let conv = null;
+  let history = [];
+  if (body.conversationId) {
+    const id = String(body.conversationId);
+    const [c, recent] = await db.batch([q.conversation.bind(id, user.id), q.recentMessages.bind(id, 24)]);
+    conv = c.rows[0];
+    if (!conv) throw new HttpError(404, "That chat doesn't exist anymore. Start a new one.");
+    history = buildHistory(recent.rows);
   }
 
-  // Find or create the conversation.
-  let conv;
+  // Count this message. For Free members the image limit is checked in the same step, so it can't be passed
+  // even by sending several messages at once. Premium has no image limit.
+  const imageLimit = premium ? UNLIMITED : config.plans.freeImagesPerDay;
+  if (!(await countUsage(user.id, today, images.length, imageLimit))) {
+    const used = (await q.usage.get(user.id, today))?.images || 0;
+    throw new HttpError(403, `Free accounts can upload ${config.plans.freeImagesPerDay} images per day.`, { code: "image_limit", used });
+  }
+
   const now = Date.now();
-  if (body.conversationId) {
-    conv = q.conversation.get(String(body.conversationId), user.id);
-    if (!conv) throw new HttpError(404, "That chat doesn't exist anymore. Start a new one.");
+  if (conv) {
+    await q.addMessage.run(conv.id, "user", text, images.length, null, null, now);
   } else {
     const title = text ? text.replace(/\s+/g, " ").slice(0, 60) : "Image chat";
     conv = { id: crypto.randomUUID(), title };
-    q.createConversation.run(conv.id, user.id, title, now, now);
+    await db.batch([
+      q.createConversation.bind(conv.id, user.id, title, now, now),
+      q.addMessage.bind(conv.id, "user", text, images.length, null, null, now)
+    ], { transaction: true });
   }
-
-  const history = buildHistory(conv.id);
-  q.addMessage.run(conv.id, "user", text, images.length, null, null, now);
-  q.addUsage.run(user.id, today, images.length);
 
   const userContent = images.length
     ? [{ type: "text", text: text || "Look at the attached image and tell me what you see, plus anything useful about it." },
@@ -161,10 +177,15 @@ async function handleChat(req, res) {
     clearInterval(ping);
   }
 
-  if (answer.trim() || error !== "stopped") {
-    q.addMessage.run(conv.id, "assistant", answer, 0, modelKey, error, Date.now());
+  // Save the answer and move the chat to the top of the history, in one round trip.
+  const saves = [];
+  if (answer.trim() || error !== "stopped") saves.push(q.addMessage.bind(conv.id, "assistant", answer, 0, modelKey, error, Date.now()));
+  saves.push(q.touchConversation.bind(Date.now(), conv.id));
+  try {
+    await db.batch(saves);
+  } catch (e) {
+    console.error("[chat] couldn't save the answer:", e.message);
   }
-  q.touchConversation.run(Date.now(), conv.id);
 
   if (error === "ai_unavailable") send("error", { code: "ai_unavailable", error: "Neuralix couldn't reach its AI model. Try again in a moment." });
   else if (error === "empty") send("error", { code: "empty", error: "No answer came back. Try rephrasing your message." });

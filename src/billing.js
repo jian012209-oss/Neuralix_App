@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { config } from "./config.js";
-import { q, transaction } from "./db.js";
+import { db, q } from "./db.js";
 import { requireUser } from "./auth.js";
 import { HttpError } from "./http.js";
 import { rateLimit } from "./ratelimit.js";
@@ -10,18 +10,20 @@ export const PLAN_DAYS = { monthly: 30, annual: 365 };
 export const planPrice = (plan) => (plan === "annual" ? config.plans.priceAnnual : config.plans.priceMonthly);
 export const gcashReady = () => !!config.paymongo.secretKey;
 
-// Extends a user's Premium. Safe to call more than once for the same payment.
-export const activatePremium = transaction((paymentId, providerPaymentId) => {
-  const p = q.payment.get(paymentId);
+// Extends a user's Premium. Safe to call more than once for the same payment, even at the same moment:
+// in one transaction, Premium time is added only while the payment is still unpaid, then it's marked paid.
+export async function activatePremium(paymentId, providerPaymentId) {
+  const p = await q.payment.get(paymentId);
   if (!p) return { ok: false, reason: "unknown_payment" };
-  const changed = q.markPaid.run(Date.now(), providerPaymentId || null, paymentId).changes;
-  if (!changed) return { ok: true, already: true };
-  const user = q.userById.get(p.user_id);
-  const base = Math.max(Date.now(), Number(user.premium_until) || 0);
-  const until = base + (PLAN_DAYS[p.plan] || 30) * DAY;
-  q.setPremiumUntil.run(until, user.id);
-  return { ok: true, until };
-});
+  const now = Date.now();
+  const [extended] = await db.batch([
+    q.extendPremiumForPayment.bind(now, (PLAN_DAYS[p.plan] || 30) * DAY, p.user_id, paymentId),
+    q.markPaid.bind(now, providerPaymentId || null, paymentId)
+  ], { transaction: true });
+  if (!extended.changes) return { ok: true, already: true };
+  const user = await q.userById.get(p.user_id);
+  return { ok: true, until: Number(user.premium_until) };
+}
 
 const checkoutLimit = rateLimit({ windowMs: 10 * 60 * 1000, max: 10, key: (req) => "pay:" + (req.user?.id || req.ip) });
 
@@ -68,7 +70,7 @@ async function checkout(req, res) {
       console.error("[billing] checkout failed", r.status, JSON.stringify(json).slice(0, 500));
       throw new HttpError(502, "Couldn't open the GCash payment page. Try again in a moment.");
     }
-    q.createPayment.run(id, req.user.id, plan, pesos, reference, Date.now());
+    await q.createPayment.run(id, req.user.id, plan, pesos, reference, Date.now());
     res.json({ url });
   } catch (e) {
     if (e instanceof HttpError) throw e;
@@ -107,7 +109,7 @@ async function webhook(req, res) {
   const session = attrs.data || {};
   const sessionId = session.id;
   const sAttrs = session.attributes || {};
-  const record = sessionId && q.payment.get(sessionId);
+  const record = sessionId && (await q.payment.get(sessionId));
   if (!record) {
     console.warn("[billing] paid event for unknown checkout session", sessionId);
     return res.json({ received: true, matched: false });
@@ -123,7 +125,7 @@ async function webhook(req, res) {
     console.error("[billing] amount too low on", sessionId, paidCentavos);
     return res.json({ received: true, activated: false });
   }
-  const result = activatePremium(sessionId, paid?.id);
+  const result = await activatePremium(sessionId, paid?.id);
   console.log("[billing] premium activated", sessionId, result);
   res.json({ received: true, activated: result.ok });
 }
