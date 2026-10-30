@@ -8,7 +8,7 @@ A futuristic AI chatbot website with its own accounts, chat history, Free and Pr
 - AI chat that types out live, with image analysis and saved history
 - Free plan: unlimited messages, Neuralix Core model, chat history, 10 image uploads per day
 - Premium plan: unlimited messages and images, Nova and Ultra models, custom instructions, longer answers
-- GCash checkout through PayMongo, with Premium turning on automatically after payment
+- GCash payments two ways: **manual** (members send to your GCash number and type the reference number, you tap Approve) or **automatic** through PayMongo
 - Owner console: members, Premium count, monthly GCash revenue, give or remove Premium
 - Phone app: a **Get the Neuralix app** button, home-screen icon, full-screen app and an offline screen, ready to turn into an Android APK and Google Play app (step 5)
 - Database in Turso's free cloud, so members, chats and Premium are kept even on Render's free plan (or a local file when you test on your own computer)
@@ -38,14 +38,26 @@ Use Ollama Cloud, which runs open models for you. Set `AI_BASE_URL=https://ollam
 
 **Option C: Groq (free key, no GPU)**
 
-Get a key at console.groq.com. Set `AI_BASE_URL=https://api.groq.com/openai/v1`, put the key in `AI_API_KEY`, and use model names from Groq's list, for example `MODEL_CORE=llama-3.1-8b-instant`, `MODEL_NOVA=llama-3.3-70b-versatile` and `MODEL_ULTRA=openai/gpt-oss-120b`. Two things to know:
+Get a key at console.groq.com. Set `AI_BASE_URL=https://api.groq.com/openai/v1`, put the key in `AI_API_KEY`, and use model names your Groq account offers, for example `MODEL_CORE=openai/gpt-oss-20b`, `MODEL_NOVA=openai/gpt-oss-120b` and `MODEL_ULTRA=openai/gpt-oss-120b`, with `MAX_TOKENS_CORE=2048` (these models think before they answer, so they need a little more room). Groq's Llama models are for Enterprise accounts only. Two things to know:
 
 - Groq's model list currently has **no model that can read images**, so image analysis won't work on Groq.
 - A free Groq key has **daily limits shared by all your members**. When they run out, Neuralix can't answer until the next day. Groq's paid plan raises them.
 
 Any other OpenAI-compatible AI service also works with the same two settings.
 
-## 2. Set up GCash payments (PayMongo)
+**Photos with a different AI service.** If your main AI can't read images (Groq right now), send only photos to a second service that can: set `VISION_BASE_URL`, `VISION_API_KEY` and `MODEL_VISION`. For Google Gemini that's `VISION_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai`, your Gemini key, and a model your account offers. If a photo can't be read, the member sees a clear message and the photo isn't counted against their daily uploads.
+
+## 2. Set up GCash payments
+
+**Option A: manual GCash (no documents needed)**
+
+1. Add two settings: `GCASH_NUMBER` (the GCash number members send to, for example `0917 123 4567`) and `GCASH_NAME` (the name GCash shows for it, for example `J•• R••`).
+2. Members tap **Upgrade with GCash**, send the exact amount with **Express Send**, and type the **reference number** from their receipt.
+3. You get a number badge on **Owner console**. Open it, find the payment in your GCash app's transactions, check that the reference number and amount match, and tap **Approve** (tap twice). Premium turns on right away: 30 days for monthly, 365 for yearly. Tap **Reject** if the payment isn't there; the member is told it wasn't approved.
+
+The same reference number can never be used twice, and a member can only have one payment waiting at a time.
+
+**Option B: automatic GCash through PayMongo** (needs a fully verified PayMongo account: DTI registration, BIR Form 2303 and a government ID). If you set PayMongo up, it replaces the manual option.
 
 1. Create a PayMongo account at paymongo.com and complete business verification so you can accept live payments.
 2. In the PayMongo dashboard, make sure **GCash** is turned on under payment methods.
@@ -159,10 +171,12 @@ Then open http://localhost:3000. Without the Turso settings, the database is a l
 | `AI_BASE_URL`, `AI_API_KEY` | Your AI server and its key |
 | `MODEL_CORE`, `MODEL_NOVA`, `MODEL_ULTRA` | Model behind each Neuralix tier |
 | `MODEL_VISION` | Model used for messages with images |
+| `VISION_BASE_URL`, `VISION_API_KEY` | Optional separate AI service just for photos |
 | `MAX_TOKENS_*` | Longest answer per tier |
 | `FREE_IMAGES_PER_DAY` | Free image uploads per day (default 10) |
 | `FREE_MESSAGES_PER_MINUTE`, `PREMIUM_MESSAGES_PER_MINUTE` | Anti-spam speed limit (default 20 and 60). There is no daily message limit. |
 | `PRICE_MONTHLY`, `PRICE_ANNUAL` | Premium prices in pesos (default ₱199 and ₱1,910) |
+| `GCASH_NUMBER`, `GCASH_NAME` | Manual GCash: the number members send to, and the name GCash shows for it |
 | `PAYMONGO_SECRET_KEY`, `PAYMONGO_WEBHOOK_SECRET` | Your PayMongo keys |
 | `PAYMONGO_METHODS` | Payment methods on the checkout page (default `gcash`) |
 | `ANDROID_PACKAGE_ID`, `ANDROID_CERT_SHA256` | From PWABuilder's `assetlinks.json`, so the Android app opens without a browser bar |

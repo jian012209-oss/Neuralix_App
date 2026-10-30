@@ -8,7 +8,7 @@ import { db, q, dayKey } from "./src/db.js";
 import { createApp, HttpError } from "./src/http.js";
 import { mountAuth, loadUser, requireUser, isPremium, isAdmin } from "./src/auth.js";
 import { mountChat } from "./src/chat.js";
-import { mountBilling, gcashReady } from "./src/billing.js";
+import { mountBilling, gcashReady, paymentMode } from "./src/billing.js";
 import { mountAdmin } from "./src/admin.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -92,13 +92,27 @@ mountAuth(app);
 app.get("/api/me", requireUser, async (req, res) => {
   const u = req.user;
   const premium = isPremium(u);
-  const used = (await q.usage.get(u.id, dayKey()))?.images || 0;
+  const admin = isAdmin(u);
+  const mode = paymentMode();
+  // Today's usage, the member's latest GCash request, and (for the owner) how many payments wait for approval.
+  const [usage, last, pending] = await db.batch([
+    q.usage.bind(u.id, dayKey()),
+    q.lastRequestForUser.bind(u.id),
+    q.pendingRequestCount.bind()
+  ]);
   res.json({
-    user: { name: u.name, email: u.email, premium, premiumUntil: premium ? u.premium_until : 0, model: u.model, persona: u.persona, isAdmin: isAdmin(u) },
-    usage: { imagesToday: used, imageLimit: config.plans.freeImagesPerDay },
+    user: { name: u.name, email: u.email, premium, premiumUntil: premium ? u.premium_until : 0, model: u.model, persona: u.persona, isAdmin: admin },
+    usage: { imagesToday: usage.rows[0]?.images || 0, imageLimit: config.plans.freeImagesPerDay },
     models: Object.entries(MODELS).map(([id, m]) => ({ id, ...m })),
     prices: { monthly: config.plans.priceMonthly, annual: config.plans.priceAnnual },
-    gcashReady: gcashReady()
+    gcashReady: gcashReady(),
+    payment: {
+      mode,
+      gcashNumber: mode === "manual" ? config.gcash.number : "",
+      gcashName: mode === "manual" ? config.gcash.name : "",
+      lastRequest: last.rows[0] || null
+    },
+    ...(admin ? { admin: { pendingRequests: pending.rows[0].n } } : {})
   });
 });
 
@@ -133,7 +147,11 @@ server.listen(config.port, () => {
   }
   const m = config.ai.models;
   console.log(`AI server: ${config.ai.baseUrl} · core=${m.core}, nova=${m.nova}, ultra=${m.ultra}${m.vision ? ", vision=" + m.vision : ""}`);
-  if (!gcashReady()) console.log("GCash payments are off until PAYMONGO_SECRET_KEY is set.");
+  if (config.ai.vision.baseUrl) console.log(`Image AI server: ${config.ai.vision.baseUrl} · vision=${m.vision || "(set MODEL_VISION)"}`);
+  const mode = paymentMode();
+  console.log(mode === "paymongo" ? "GCash payments: automatic (PayMongo)."
+    : mode === "manual" ? `GCash payments: manual, to ${config.gcash.number}. Approve them in the Owner console.`
+    : "GCash payments are off. Set GCASH_NUMBER (manual) or PAYMONGO_SECRET_KEY (automatic).");
   if (!config.adminEmails.length) console.log("Tip: set ADMIN_EMAILS to open the owner console.");
 });
 
