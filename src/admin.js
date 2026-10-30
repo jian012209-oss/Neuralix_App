@@ -2,6 +2,7 @@ import { config } from "./config.js";
 import { db, q, stmt } from "./db.js";
 import { requireUser, requireAdmin, isPremium } from "./auth.js";
 import { HttpError } from "./http.js";
+import { approveRequest, rejectRequest } from "./billing.js";
 
 const monthStart = () => {
   const [y, m] = new Intl.DateTimeFormat("en-CA", { timeZone: config.timeZone, year: "numeric", month: "2-digit" }).format(new Date()).split("-");
@@ -15,7 +16,12 @@ const stmts = {
   revenue: stmt("SELECT COALESCE(SUM(amount),0) AS total, COUNT(*) AS n FROM payments WHERE status = 'paid' AND paid_at >= ?"),
   recentPayments: stmt(`SELECT p.id, p.plan, p.amount, p.status, p.reference, p.created_at, p.paid_at, u.email
     FROM payments p JOIN users u ON u.id = p.user_id ORDER BY p.created_at DESC LIMIT 50`),
-  recentUsers: stmt("SELECT id, name, email, premium_until, created_at FROM users ORDER BY created_at DESC LIMIT 50")
+  recentUsers: stmt("SELECT id, name, email, premium_until, created_at FROM users ORDER BY created_at DESC LIMIT 50"),
+  manualRevenue: stmt("SELECT COALESCE(SUM(amount),0) AS total, COUNT(*) AS n FROM premium_requests WHERE status = 'approved' AND decided_at >= ?"),
+  // Waiting ones first, then the newest.
+  requests: stmt(`SELECT r.id, r.plan, r.amount, r.reference, r.status, r.created_at, r.decided_at, u.email, u.name
+    FROM premium_requests r JOIN users u ON u.id = r.user_id
+    ORDER BY CASE WHEN r.status = 'pending' THEN 0 ELSE 1 END, r.created_at DESC LIMIT 50`)
 };
 
 export function mountAdmin(app) {
@@ -23,15 +29,37 @@ const guard = [requireUser, requireAdmin];
 app.get("/api/admin/overview", ...guard, async (_req, res) => {
   const now = Date.now();
   // Everything for the Owner console in one round trip.
-  const [users, premium, revenue, payments, recent] = await db.batch([
-    stmts.users.bind(), stmts.premium.bind(now), stmts.revenue.bind(monthStart()), stmts.recentPayments.bind(), stmts.recentUsers.bind()
+  const since = monthStart();
+  const [users, premium, revenue, payments, recent, manualRev, requests] = await db.batch([
+    stmts.users.bind(), stmts.premium.bind(now), stmts.revenue.bind(since), stmts.recentPayments.bind(), stmts.recentUsers.bind(),
+    stmts.manualRevenue.bind(since), stmts.requests.bind()
   ]);
-  const rev = revenue.rows[0];
+  const rev = revenue.rows[0], man = manualRev.rows[0];
   res.json({
-    stats: { users: users.rows[0].n, premium: premium.rows[0].n, revenueThisMonth: rev.total, paidThisMonth: rev.n },
+    stats: {
+      users: users.rows[0].n, premium: premium.rows[0].n,
+      revenueThisMonth: rev.total + man.total, paidThisMonth: rev.n + man.n,
+      pendingRequests: requests.rows.filter((r) => r.status === "pending").length
+    },
     payments: payments.rows,
+    requests: requests.rows,
     users: recent.rows.map((u) => ({ ...u, premium: u.premium_until > now }))
   });
+});
+
+// Manual GCash: check the payment in your GCash app, then approve (Premium turns on) or reject it.
+app.post("/api/admin/requests/:id/approve", ...guard, async (req, res) => {
+  const r = await approveRequest(Number(req.params.id));
+  if (!r.ok) throw new HttpError(404, "That payment request doesn't exist.");
+  if (r.already) throw new HttpError(409, `That payment was already ${r.status}.`, { code: "already_decided" });
+  res.json(r);
+});
+
+app.post("/api/admin/requests/:id/reject", ...guard, async (req, res) => {
+  const r = await rejectRequest(Number(req.params.id));
+  if (!r.ok) throw new HttpError(404, "That payment request doesn't exist.");
+  if (r.already) throw new HttpError(409, `That payment was already ${r.status}.`, { code: "already_decided" });
+  res.json(r);
 });
 
 app.post("/api/admin/grant", ...guard, async (req, res) => {

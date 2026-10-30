@@ -45,22 +45,23 @@ export class AiError extends Error {
 /**
  * Streams a chat completion from any OpenAI-compatible server.
  * Calls onText(delta) as text arrives and resolves with the full answer.
+ * baseUrl/apiKey default to the main AI settings; images can use a separate service (VISION_BASE_URL).
  */
-export async function streamChat({ model, messages, maxTokens, signal, onText }) {
+export async function streamChat({ model, messages, maxTokens, signal, onText, baseUrl = config.ai.baseUrl, apiKey = config.ai.apiKey }) {
   const timeout = AbortSignal.timeout(config.ai.timeoutMs);
   const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
 
   let res;
   try {
-    res = await fetch(`${config.ai.baseUrl}/chat/completions`, {
+    res = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.ai.apiKey}` },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({ model, messages, stream: true, max_tokens: maxTokens, temperature: 0.7 }),
       signal: combined
     });
   } catch (e) {
     if (signal?.aborted) throw e;
-    throw new AiError(`Could not reach the AI server at ${config.ai.baseUrl} (${e.cause?.code || e.name})`, 0);
+    throw new AiError(`Could not reach the AI server at ${baseUrl} (${e.cause?.code || e.name})`, 0);
   }
   if (!res.ok || !res.body) {
     const detail = await res.text().catch(() => "");

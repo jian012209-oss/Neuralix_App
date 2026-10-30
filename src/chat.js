@@ -137,7 +137,13 @@ async function handleChat(req, res) {
        ...images.map((url) => ({ type: "image_url", image_url: { url } }))]
     : text;
   const messages = [{ role: "system", content: systemPrompt(user, modelKey) }, ...history, { role: "user", content: userContent }];
-  const modelId = images.length && config.ai.models.vision ? config.ai.models.vision : config.ai.models[modelKey];
+  // Messages with images go to the image model, on its own AI service when VISION_BASE_URL is set
+  // (for example Gemini for photos while chat stays on Groq).
+  const useVision = images.length > 0 && !!config.ai.models.vision;
+  const modelId = useVision ? config.ai.models.vision : config.ai.models[modelKey];
+  const service = useVision && config.ai.vision.baseUrl
+    ? { baseUrl: config.ai.vision.baseUrl, apiKey: config.ai.vision.apiKey || config.ai.apiKey }
+    : {};
 
   res.writeHead(200, {
     "Content-Type": "text/event-stream; charset=utf-8",
@@ -158,6 +164,7 @@ async function handleChat(req, res) {
   let truncated = false;
   try {
     const out = await streamChat({
+      ...service,
       model: modelId,
       messages,
       maxTokens: config.ai.maxTokens[modelKey],
@@ -177,17 +184,22 @@ async function handleChat(req, res) {
     clearInterval(ping);
   }
 
+  // If the AI couldn't look at the images, give them back so the try doesn't use up today's uploads.
+  if (images.length && (error === "ai_unavailable" || error === "empty")) error = "image_unavailable";
+
   // Save the answer and move the chat to the top of the history, in one round trip.
   const saves = [];
   if (answer.trim() || error !== "stopped") saves.push(q.addMessage.bind(conv.id, "assistant", answer, 0, modelKey, error, Date.now()));
   saves.push(q.touchConversation.bind(Date.now(), conv.id));
+  if (error === "image_unavailable") saves.push(q.refundImages.bind(images.length, user.id, today));
   try {
     await db.batch(saves);
   } catch (e) {
     console.error("[chat] couldn't save the answer:", e.message);
   }
 
-  if (error === "ai_unavailable") send("error", { code: "ai_unavailable", error: "Neuralix couldn't reach its AI model. Try again in a moment." });
+  if (error === "image_unavailable") send("error", { code: "image_unavailable", refunded: images.length, error: "Neuralix couldn't look at the image right now. It wasn't counted against your uploads." });
+  else if (error === "ai_unavailable") send("error", { code: "ai_unavailable", error: "Neuralix couldn't reach its AI model. Try again in a moment." });
   else if (error === "empty") send("error", { code: "empty", error: "No answer came back. Try rephrasing your message." });
   else send("done", { truncated });
   res.end();

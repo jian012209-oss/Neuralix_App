@@ -9,6 +9,58 @@ const DAY = 864e5;
 export const PLAN_DAYS = { monthly: 30, annual: 365 };
 export const planPrice = (plan) => (plan === "annual" ? config.plans.priceAnnual : config.plans.priceMonthly);
 export const gcashReady = () => !!config.paymongo.secretKey;
+// How members pay: "paymongo" (automatic), "manual" (send to your GCash number, you approve), or "off".
+export const paymentMode = () => (gcashReady() ? "paymongo" : config.gcash.number ? "manual" : "off");
+
+/* ---------- Manual GCash ---------- */
+
+// GCash reference numbers are digits (13 on most receipts). Spaces and dashes are removed first.
+const cleanReference = (s) => String(s || "").replace(/[\s-]/g, "");
+const REFERENCE_RX = /^\d{8,20}$/;
+const manualLimit = rateLimit({ windowMs: 10 * 60 * 1000, max: 10, key: (req) => "manual:" + req.user.id, message: "Too many tries. Wait a few minutes, then try again." });
+
+async function submitManual(req, res) {
+  if (paymentMode() !== "manual") throw new HttpError(503, "GCash payments aren't set up yet. Please try again later.", { code: "gcash_not_ready" });
+  const body = await req.json();
+  const plan = body.plan === "annual" ? "annual" : "monthly";
+  const reference = cleanReference(body.reference);
+  if (!REFERENCE_RX.test(reference)) throw new HttpError(400, "Enter the reference number from your GCash receipt (numbers only).", { code: "bad_reference" });
+  const last = await q.lastRequestForUser.get(req.user.id);
+  if (last && last.status === "pending") {
+    throw new HttpError(409, "You already sent a payment that's waiting for approval.", { code: "request_pending" });
+  }
+  const amount = planPrice(plan);
+  const now = Date.now();
+  let info;
+  try {
+    info = await q.createRequest.run(req.user.id, plan, amount, reference, now);
+  } catch (e) {
+    if (/UNIQUE/i.test(e.message)) throw new HttpError(409, "That reference number was already used. Check the number on your GCash receipt.", { code: "reference_used" });
+    throw e;
+  }
+  res.json({ ok: true, request: { id: Number(info.lastInsertRowid), plan, amount, reference, status: "pending", created_at: now, decided_at: null } }, 201);
+}
+
+// The owner approves: Premium is added (30 or 365 days) and the request is marked approved, together.
+export async function approveRequest(id) {
+  const r = await q.request.get(id);
+  if (!r) return { ok: false, reason: "not_found" };
+  const now = Date.now();
+  const [extended] = await db.batch([
+    q.extendPremiumForRequest.bind(now, (PLAN_DAYS[r.plan] || 30) * DAY, r.user_id, r.id),
+    q.decideRequest.bind("approved", now, r.id)
+  ], { transaction: true });
+  if (!extended.changes) return { ok: true, already: true, status: r.status };
+  const user = await q.userById.get(r.user_id);
+  return { ok: true, email: user.email, premiumUntil: Number(user.premium_until) };
+}
+
+export async function rejectRequest(id) {
+  const r = await q.request.get(id);
+  if (!r) return { ok: false, reason: "not_found" };
+  const changed = (await q.decideRequest.run("rejected", Date.now(), r.id)).changes;
+  return { ok: true, already: !changed, status: changed ? "rejected" : r.status };
+}
 
 // Extends a user's Premium. Safe to call more than once for the same payment, even at the same moment:
 // in one transaction, Premium time is added only while the payment is still unpaid, then it's marked paid.
@@ -132,5 +184,6 @@ async function webhook(req, res) {
 
 export function mountBilling(app) {
   app.post("/api/billing/checkout", requireUser, checkoutLimit, checkout);
+  app.post("/api/billing/manual", requireUser, manualLimit, submitManual);
   app.post("/api/billing/webhook", webhook);
 }

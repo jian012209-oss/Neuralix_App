@@ -65,7 +65,22 @@ const SCHEMA = [
     created_at INTEGER NOT NULL,
     paid_at INTEGER
   )`,
-  "CREATE INDEX IF NOT EXISTS pay_user ON payments(user_id, created_at DESC)"
+  "CREATE INDEX IF NOT EXISTS pay_user ON payments(user_id, created_at DESC)",
+  // Manual GCash: a member says "I sent ₱199, reference 1234…", and the owner approves or rejects it.
+  `CREATE TABLE IF NOT EXISTS premium_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    plan TEXT NOT NULL,
+    amount INTEGER NOT NULL,
+    reference TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at INTEGER NOT NULL,
+    decided_at INTEGER
+  )`,
+  // The same GCash reference number can only ever be used once.
+  "CREATE UNIQUE INDEX IF NOT EXISTS req_reference ON premium_requests(reference)",
+  "CREATE INDEX IF NOT EXISTS req_user ON premium_requests(user_id, created_at DESC)",
+  "CREATE INDEX IF NOT EXISTS req_status ON premium_requests(status, created_at DESC)"
 ];
 
 export class DbError extends Error {
@@ -277,13 +292,25 @@ export const q = {
   countUsage: stmt(`INSERT INTO usage (user_id, day, images, messages) SELECT ?, ?, ?, 1 WHERE ? <= ?
     ON CONFLICT(user_id, day) DO UPDATE SET images = images + excluded.images, messages = messages + 1
     WHERE excluded.images = 0 OR usage.images + excluded.images <= ?`),
+  // Gives images back when the AI couldn't look at them, so a failed try doesn't use up the day's uploads.
+  refundImages: stmt("UPDATE usage SET images = MAX(0, images - ?) WHERE user_id = ? AND day = ?"),
 
   createPayment: stmt("INSERT INTO payments (id, user_id, plan, amount, status, reference, created_at) VALUES (?, ?, ?, ?, 'pending', ?, ?)"),
   payment: stmt("SELECT * FROM payments WHERE id = ?"),
   // Used together in one transaction: add Premium time only while the payment is still unpaid, then mark it paid.
   // A repeated "paid" message from PayMongo therefore never adds Premium twice.
   extendPremiumForPayment: stmt("UPDATE users SET premium_until = MAX(premium_until, ?) + ? WHERE id = ? AND EXISTS (SELECT 1 FROM payments WHERE id = ? AND status <> 'paid')"),
-  markPaid: stmt("UPDATE payments SET status = 'paid', paid_at = ?, provider_payment_id = ? WHERE id = ? AND status <> 'paid'")
+  markPaid: stmt("UPDATE payments SET status = 'paid', paid_at = ?, provider_payment_id = ? WHERE id = ? AND status <> 'paid'"),
+
+  // Manual GCash requests.
+  createRequest: stmt("INSERT INTO premium_requests (user_id, plan, amount, reference, status, created_at) VALUES (?, ?, ?, ?, 'pending', ?)"),
+  request: stmt("SELECT * FROM premium_requests WHERE id = ?"),
+  lastRequestForUser: stmt("SELECT id, plan, amount, reference, status, created_at, decided_at FROM premium_requests WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT 1"),
+  pendingRequestCount: stmt("SELECT COUNT(*) AS n FROM premium_requests WHERE status = 'pending'"),
+  // Used together in one transaction, like PayMongo payments: add Premium only while the request is still
+  // pending, then mark it approved. Tapping Approve twice never adds Premium twice.
+  extendPremiumForRequest: stmt("UPDATE users SET premium_until = MAX(premium_until, ?) + ? WHERE id = ? AND EXISTS (SELECT 1 FROM premium_requests WHERE id = ? AND status = 'pending')"),
+  decideRequest: stmt("UPDATE premium_requests SET status = ?, decided_at = ? WHERE id = ? AND status = 'pending'")
 };
 
 // Returns true if the message was counted, false if it would pass today's image limit.
