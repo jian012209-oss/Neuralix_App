@@ -74,6 +74,11 @@ svg.i{width:18px;height:18px;flex:none;fill:none;stroke:currentColor;stroke-widt
 .pc-chip{display:inline-flex;align-items:center;gap:6px;font:600 11px/1 var(--f-body);letter-spacing:.1em;text-transform:uppercase;color:var(--lilac);padding:6px 9px;border-radius:999px;background:rgba(139,92,246,.18);border:1px solid rgba(196,181,253,.25)}
 .pc-chip.prem{color:#FFF;background:var(--grad);border-color:transparent}
 .pc-sub{font-size:12px;color:var(--ink-3)}
+.pc-note{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--warn)}
+.pc-note svg.i{width:15px;height:15px}
+.gp-num{font-family:var(--f-mono);letter-spacing:.03em;white-space:nowrap;color:#fff}
+.req-act button.sure{background:rgba(251,191,36,.14);border-color:rgba(251,191,36,.45);color:#FDE68A}
+.notice svg.i{width:16px;height:16px;flex:none;margin-top:2px;color:var(--warn)}
 .pc-row{display:flex;justify-content:space-between;gap:8px;font-size:13px;color:var(--ink-2)}
 .pc-row b{font:500 13px/1.4 var(--f-mono);color:var(--ink);font-variant-numeric:tabular-nums}
 .bar{height:6px;border-radius:999px;background:rgba(167,139,250,.14);overflow:hidden}
@@ -483,7 +488,7 @@ svg.i{width:18px;height:18px;flex:none;fill:none;stroke:currentColor;stroke-widt
     <nav class="hist" id="hist" aria-label="Chat history"></nav>
     <button class="side-app" type="button" data-act="install" data-install hidden><img src="/icons/icon-192.png" alt=""><span><b>Get the Neuralix app</b><small>Opens full screen</small></span><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m-4.5-4.5L12 15l4.5-4.5M5 19h14"/></svg></button>
     <div class="plan-card" id="planCard"></div>
-    <button class="admin-link" id="adminLink" type="button" hidden><span>Owner console</span></button>
+    <button class="admin-link" id="adminLink" type="button" hidden><span>Owner console</span><span class="count" id="adminCount" hidden></span></button>
     <div class="acct">
       <div class="avatar" id="avatar" aria-hidden="true">N</div>
       <div class="acct-txt"><b id="acctName"></b><span id="acctEmail"></span></div>
@@ -588,8 +593,8 @@ svg.i{width:18px;height:18px;flex:none;fill:none;stroke:currentColor;stroke-widt
     </div>
     <div class="how" aria-label="How GCash payment works">
       <div><b>1</b><span><strong>Choose Premium</strong>Monthly or yearly</span></div>
-      <div><b>2</b><span><strong>Pay with GCash</strong>On the secure PayMongo page</span></div>
-      <div><b>3</b><span><strong>Premium turns on</strong>Automatically, right after payment</span></div>
+      <div><b>2</b><span><strong id="how2t">Pay with GCash</strong><span id="how2s">On the secure PayMongo page</span></span></div>
+      <div><b>3</b><span><strong>Premium turns on</strong><span id="how3s">Automatically, right after payment</span></span></div>
     </div>
     <p class="pr-foot">Prices in Philippine pesos. Neuralix never asks for your GCash MPIN or OTP.</p>
   </div>
@@ -634,11 +639,24 @@ svg.i{width:18px;height:18px;flex:none;fill:none;stroke:currentColor;stroke-widt
   </div>
 </div>
 
+<!-- Pay with GCash (manual): send to the owner's GCash number, then enter the reference number -->
+<div class="modal" id="gcashPay" hidden role="dialog" aria-modal="true" aria-labelledby="gpTitle">
+  <div class="sheet">
+    <div class="sheet-h"><div><h3 id="gpTitle">Pay with GCash</h3><p id="gpSub"></p></div><button class="icon-btn" type="button" data-close="gcashPay" aria-label="Close"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
+    <div id="gpBody"></div>
+  </div>
+</div>
+
 <!-- Owner console -->
 <div class="modal" id="admin" hidden role="dialog" aria-modal="true" aria-labelledby="adminTitle">
   <div class="sheet wide">
     <div class="sheet-h"><div><h3 id="adminTitle">Owner console</h3><p>Members, Premium and GCash revenue.</p></div><button class="icon-btn" type="button" data-close="admin" aria-label="Close"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
     <div class="stats" id="adStats"></div>
+    <section class="ad-sec" id="adReqSec" hidden>
+      <h4>GCash payments to check <span class="count" id="adReqCount" hidden></span></h4>
+      <p>Before you approve, open your GCash app and find the payment in your transactions. The reference number and amount should match.</p>
+      <div id="adRequests"></div>
+    </section>
     <section class="ad-sec">
       <h4>Give or remove Premium</h4>
       <p>For refunds, promos, testers or GCash payments you received outside the website.</p>
@@ -651,7 +669,7 @@ svg.i{width:18px;height:18px;flex:none;fill:none;stroke:currentColor;stroke-widt
         <div class="grant-actions"><button class="btn-grad" type="submit">Give Premium</button><button class="btn-line" type="button" id="revokeBtn">Remove Premium</button></div>
       </form>
     </section>
-    <section class="ad-sec"><h4>Recent GCash payments</h4><p>Paid payments turn Premium on automatically.</p><div id="adPayments"></div></section>
+    <section class="ad-sec" id="adPaySec"><h4>Recent GCash payments (PayMongo)</h4><p>Paid payments turn Premium on automatically.</p><div id="adPayments"></div></section>
     <section class="ad-sec"><h4>Newest members</h4><p>The 50 most recent sign-ups.</p><div id="adUsers"></div></section>
   </div>
 </div>
@@ -763,7 +781,7 @@ function renderMd(src) {
 /* ---------- views ---------- */
 function showAuth() {
   $("#boot").hidden = true; $("#appView").hidden = true; $("#authView").hidden = false;
-  ["pricing", "nudge", "persona", "admin", "confirm"].forEach((id) => { $("#" + id).hidden = true; });
+  ["pricing", "nudge", "persona", "admin", "confirm", "gcashPay"].forEach((id) => { $("#" + id).hidden = true; });
 }
 function setAuthMode(mode) {
   S.authMode = mode;
@@ -804,10 +822,21 @@ async function startApp() {
   $("#avatar").textContent = (S.me.user.name.trim()[0] || "N").toUpperCase();
   $("#adminLink").hidden = !S.me.user.isAdmin;
   $("#freeImgFeat").textContent = S.me.usage.imageLimit + " image uploads per day";
-  renderAll();
+  renderAll(); renderAdminBadge();
   await loadConversations();
 }
-async function refreshMe() { try { S.me = await api("/api/me"); renderModel(); renderPlan(); renderPricing(); } catch { /* handled */ } }
+async function refreshMe() {
+  const was = isPremium();
+  try {
+    S.me = await api("/api/me"); renderModel(); renderPlan(); renderPricing(); renderAdminBadge();
+    if (!was && isPremium() && $("#confirm").hidden) toast("Premium is active. Every model and unlimited images are yours.");
+  } catch { /* handled */ }
+}
+// The owner sees how many GCash payments are waiting, on the Owner console link.
+function renderAdminBadge() {
+  const n = (S.me && S.me.admin && S.me.admin.pendingRequests) || 0;
+  $("#adminCount").hidden = !n; $("#adminCount").textContent = n;
+}
 
 async function loadConversations() {
   try { S.convs = (await api("/api/conversations")).conversations; } catch { S.convs = []; }
@@ -868,6 +897,7 @@ function msgEl(m, isLast) {
 }
 const ERRORS = {
   ai_unavailable: "Neuralix couldn't reach its AI model. Try again in a moment.",
+  image_unavailable: "Neuralix couldn't look at the image right now. It wasn't counted against your uploads. Try again in a moment.",
   empty: "No answer came back. Try rephrasing your message.",
   stopped: "Stopped."
 };
@@ -923,10 +953,13 @@ function renderPlan() {
       + '<button class="btn-line" type="button" data-act="pricing">Extend Premium</button>';
   } else {
     const pct = Math.min(100, (used / limit) * 100);
+    const last = S.me.payment && S.me.payment.lastRequest;
+    const waiting = last && last.status === "pending";
     card.innerHTML = '<div class="pc-top"><span class="pc-chip">Free plan</span><span class="pc-sub">∞ messages</span></div>'
       + '<div class="pc-row"><span>Image uploads today</span><b>' + Math.min(used, limit) + " / " + limit + "</b></div>"
       + '<div class="bar' + (used >= limit ? " full" : "") + '"><i style="width:' + pct + '%"></i></div>'
-      + '<button class="btn-grad" type="button" data-act="pricing">' + I.star + "Upgrade to Premium</button>";
+      + (waiting ? '<div class="pc-note">' + I.clock + "GCash payment being checked</div>" : "")
+      + '<button class="btn-grad" type="button" data-act="pricing">' + I.star + (waiting ? "View payment" : "Upgrade to Premium") + "</button>";
   }
   renderMeta();
 }
@@ -959,9 +992,71 @@ function renderPricing() {
   $("#prPrice").textContent = peso(annual ? perMonth : p.monthly);
   $("#prNote").textContent = annual ? peso(p.annual) + " paid yearly via GCash" + (save > 0 ? " · save " + peso(save) : "") : "Paid monthly via GCash";
   $("#freeBtn").textContent = prem ? "Included in Premium" : "Current plan";
+  const pay = S.me.payment || { mode: S.me.gcashReady ? "paymongo" : "off" };
+  const waiting = pay.lastRequest && pay.lastRequest.status === "pending";
+  const manual = pay.mode === "manual";
   const b = $("#premBtn");
-  b.disabled = !S.me.gcashReady;
-  b.textContent = !S.me.gcashReady ? "GCash payments coming soon" : prem ? "Extend with GCash" : "Upgrade with GCash";
+  b.disabled = pay.mode === "off";
+  b.textContent = pay.mode === "off" ? "GCash payments coming soon" : waiting ? "Payment sent · being checked" : prem ? "Extend with GCash" : "Upgrade with GCash";
+  $("#how2t").textContent = manual ? "Send with GCash" : "Pay with GCash";
+  $("#how2s").textContent = manual ? "Then enter the reference number" : "On the secure PayMongo page";
+  $("#how3s").textContent = manual ? "As soon as your payment is confirmed" : "Automatically, right after payment";
+}
+
+/* ---------- manual GCash: send to the owner's number, then enter the reference number ---------- */
+const groupRef = (s) => (String(s).length === 13 ? String(s).replace(/^(\d{4})(\d{3})(\d{6})$/, "$1 $2 $3") : String(s));
+function openGcash() {
+  const p = S.me.prices, annual = S.billing === "annual";
+  const amount = annual ? p.annual : p.monthly;
+  $("#gpSub").textContent = "Premium " + (annual ? "yearly" : "monthly") + " · " + pesoX(amount);
+  const last = S.me.payment.lastRequest;
+  if (last && last.status === "pending") gcashWaiting(last); else gcashForm(amount, last);
+  show("gcashPay");
+}
+function gcashForm(amount, last) {
+  const pay = S.me.payment;
+  const rejected = last && last.status === "rejected" && Date.now() - (last.decided_at || 0) < 7 * 864e5;
+  $("#gpBody").innerHTML = (rejected ? '<div class="notice warn" id="gpRejected">' + I.clock + "<span></span></div>" : "")
+    + '<ol class="steps">'
+    + "<li><b>1</b><span>Open <strong>GCash</strong> and tap <strong>Send</strong>, then <strong>Express Send</strong>.</span></li>"
+    + '<li><b>2</b><span>Send exactly <strong id="gpAmt"></strong> to <strong class="gp-num" id="gpNum"></strong><span id="gpName"></span>. <button type="button" class="link-btn" id="gpCopy">Copy number</button></span></li>'
+    + "<li><b>3</b><span>On your GCash receipt, copy the <strong>Ref. No.</strong> and paste it below.</span></li>"
+    + "</ol>"
+    + '<div class="field"><label for="gpRef">GCash reference number</label><input id="gpRef" class="mono" inputmode="numeric" autocomplete="off" maxlength="30" placeholder="e.g. 1234 567 890123"></div>'
+    + '<p class="form-err" id="gpErr" role="alert"></p>'
+    + '<div class="safe">' + I.ok + "<span>Neuralix never asks for your GCash MPIN or OTP. Only send money from your own GCash app.</span></div>"
+    + '<div class="btn-pair"><button class="btn-grad" type="button" id="gpSubmit">I sent it · submit reference number</button></div>';
+  if (rejected) $("#gpRejected span").textContent = "Your last payment (ref. " + groupRef(last.reference) + ") wasn't approved. If you sent the money, check the reference number on your receipt and try again.";
+  $("#gpAmt").textContent = pesoX(amount);
+  $("#gpNum").textContent = pay.gcashNumber;
+  $("#gpName").textContent = pay.gcashName ? " (" + pay.gcashName + ")" : "";
+  $("#gpCopy").onclick = () => copyText(pay.gcashNumber.replace(/\s/g, ""));
+  $("#gpSubmit").onclick = submitGcash;
+}
+async function submitGcash() {
+  const err = $("#gpErr"); err.textContent = "";
+  const ref = $("#gpRef").value.replace(/[\s-]/g, "");
+  if (!/^\d{8,20}$/.test(ref)) { err.textContent = "Enter the reference number from your GCash receipt (numbers only)."; return; }
+  const btn = $("#gpSubmit"); btn.disabled = true; btn.textContent = "Sending…";
+  try {
+    const { request } = await api("/api/billing/manual", { method: "POST", body: { plan: S.billing, reference: ref } });
+    S.me.payment.lastRequest = request;
+    gcashWaiting(request); renderPricing(); renderPlan();
+  } catch (e) {
+    if (e.code === "auth_required") return;
+    err.textContent = e.message;
+    if (e.code === "request_pending") refreshMe();
+    btn.disabled = false; btn.textContent = "I sent it · submit reference number";
+  }
+}
+function gcashWaiting(r) {
+  $("#gpBody").innerHTML = '<div class="status"><div class="status-ic pending">' + I.clock + "</div><h4>Payment sent for checking</h4>"
+    + "<p>Premium turns on as soon as your payment is confirmed. You can keep chatting, and you don't need to stay on this page.</p>"
+    + '<div class="kv"><div><span>Reference no.</span><b id="gwRef"></b></div><div><span>Amount</span><b id="gwAmt"></b></div><div><span>Plan</span><b id="gwPlan"></b></div></div>'
+    + '<button class="btn-grad" type="button" data-close="gcashPay">Keep chatting</button></div>';
+  $("#gwRef").textContent = groupRef(r.reference);
+  $("#gwAmt").textContent = pesoX(r.amount);
+  $("#gwPlan").textContent = r.plan === "annual" ? "Premium yearly" : "Premium monthly";
 }
 
 /* ---------- chats ---------- */
@@ -1054,6 +1149,8 @@ async function runTurn(text, images) {
           a.content += payload.text; if (S.current === chat) scheduleAi(a);
         } else if (ev === "error") {
           a.error = payload.code || payload.error;
+          // The server gave the images back because the AI couldn't look at them.
+          if (payload.refunded && S.me) { S.me.usage.imagesToday = Math.max(0, S.me.usage.imagesToday - payload.refunded); renderPlan(); }
         } else if (ev === "done" && payload.truncated) {
           a.note = "This answer reached its length limit. Ask Neuralix to continue.";
         }
@@ -1166,6 +1263,32 @@ function renderAdmin(d) {
     '<div class="stat"><span>Members</span><b>' + d.stats.users.toLocaleString("en-PH") + "</b><small>All accounts</small></div>"
     + '<div class="stat"><span>Premium now</span><b>' + d.stats.premium.toLocaleString("en-PH") + "</b><small>Active subscriptions</small></div>"
     + '<div class="stat"><span>This month</span><b>' + esc(peso(d.stats.revenueThisMonth)) + "</b><small>" + d.stats.paidThisMonth + " GCash payment" + (d.stats.paidThisMonth === 1 ? "" : "s") + "</small></div>";
+
+  // Manual GCash payments to check: waiting ones first, with Approve / Reject.
+  const manual = S.me.payment && S.me.payment.mode === "manual";
+  const requests = d.requests || [];
+  const waiting = d.stats.pendingRequests || 0;
+  $("#adReqSec").hidden = !(manual || requests.length);
+  $("#adReqCount").hidden = !waiting; $("#adReqCount").textContent = waiting;
+  if (S.me.admin) { S.me.admin.pendingRequests = waiting; renderAdminBadge(); }
+  const reqs = $("#adRequests"); reqs.textContent = "";
+  if (!requests.length) reqs.innerHTML = '<p class="hist-empty" style="padding:8px 0">No GCash payments yet. When a member sends one, it shows up here for you to check.</p>';
+  requests.forEach((r) => {
+    const row = document.createElement("div"); row.className = "req";
+    row.innerHTML = '<div class="req-main"><div class="req-ref"></div><div class="req-sub"></div></div><div class="req-act"></div>';
+    row.querySelector(".req-ref").textContent = groupRef(r.reference);
+    row.querySelector(".req-sub").textContent = r.name + " · " + r.email + " · " + (r.plan === "annual" ? "Yearly" : "Monthly") + " · " + pesoX(r.amount) + " · " + fmtTime(r.created_at);
+    const act = row.querySelector(".req-act");
+    if (r.status === "pending") {
+      act.append(decideBtn(r, "approve"), decideBtn(r, "reject"));
+    } else {
+      const st = document.createElement("span"); st.className = "st " + r.status;
+      st.textContent = r.status === "approved" ? "Approved" : "Rejected"; act.append(st);
+    }
+    reqs.append(row);
+  });
+  $("#adPaySec").hidden = manual && !d.payments.length;
+
   const pay = $("#adPayments"); pay.textContent = "";
   if (!d.payments.length) pay.innerHTML = '<p class="hist-empty" style="padding:8px 0">No payments yet. They appear here as soon as someone checks out.</p>';
   d.payments.forEach((p) => {
@@ -1187,6 +1310,28 @@ function renderAdmin(d) {
     row.style.cursor = "pointer"; row.onclick = () => { $("#grantEmail").value = u.email; $("#grantEmail").focus(); };
     users.append(row);
   });
+}
+// Approve / Reject need a second tap within 3 seconds, so a slip of the finger can't give away Premium.
+function decideBtn(r, action) {
+  const b = document.createElement("button"); b.type = "button";
+  b.className = action === "approve" ? "ok" : "no";
+  const label = action === "approve" ? "Approve" : "Reject";
+  b.textContent = label;
+  b.onclick = async () => {
+    if (!b.classList.contains("sure")) {
+      b.classList.add("sure"); b.textContent = "Tap again to " + label.toLowerCase();
+      setTimeout(() => { if (b.isConnected) { b.classList.remove("sure"); b.textContent = label; } }, 3000);
+      return;
+    }
+    b.disabled = true; b.textContent = action === "approve" ? "Approving…" : "Rejecting…";
+    try {
+      const res = await api("/api/admin/requests/" + r.id + "/" + action, { method: "POST", body: {} });
+      toast(action === "approve" ? "Approved. Premium is on for " + res.email + " until " + fmtDate(res.premiumUntil) + "." : "Payment rejected. The member will see it wasn't approved.");
+    } catch (e) { if (e.code !== "auth_required") toast(e.message); }
+    try { renderAdmin(await api("/api/admin/overview")); } catch { /* handled */ }
+    if (r.email === S.me.user.email) refreshMe();
+  };
+  return b;
 }
 async function grant(revoke) {
   const err = $("#grantErr"); err.textContent = "";
@@ -1247,7 +1392,9 @@ $("#logoutBtn").onclick = async () => {
   S.me = null; S.convs = []; S.current = null; S.cache.clear(); setAuthMode("login"); showAuth();
 };
 $("#billSwitch").onclick = () => { S.billing = S.billing === "annual" ? "monthly" : "annual"; renderPricing(); };
-$("#premBtn").onclick = startCheckout;
+$("#premBtn").onclick = () => { if (S.me && S.me.payment && S.me.payment.mode === "manual") openGcash(); else startCheckout(); };
+// Coming back to Neuralix (e.g. after the owner approved a GCash payment) refreshes the plan.
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && S.me && !$("#appView").hidden) refreshMe(); });
 $("#nudgeGo").onclick = () => { hide("nudge"); openPricing(); };
 $("#tabLogin").onclick = () => setAuthMode("login");
 $("#tabSignup").onclick = () => setAuthMode("signup");
@@ -1259,10 +1406,10 @@ document.addEventListener("click", (e) => {
   if (a.dataset.act === "pricing") openPricing();
   else if (a.dataset.act === "install") installApp();
 });
-["nudge", "persona", "admin", "installHelp"].forEach((id) => $("#" + id).addEventListener("click", (e) => { if (e.target.id === id) hide(id); }));
+["nudge", "persona", "admin", "installHelp", "gcashPay"].forEach((id) => $("#" + id).addEventListener("click", (e) => { if (e.target.id === id) hide(id); }));
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
-  for (const id of ["installHelp", "nudge", "persona", "admin", "pricing"]) { if (!$("#" + id).hidden) { hide(id); return; } }
+  for (const id of ["installHelp", "gcashPay", "nudge", "persona", "admin", "pricing"]) { if (!$("#" + id).hidden) { hide(id); return; } }
   closeMenu(); closeDrawer();
 });
 
