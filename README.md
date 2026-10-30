@@ -11,6 +11,7 @@ A futuristic AI chatbot website with its own accounts, chat history, Free and Pr
 - GCash checkout through PayMongo, with Premium turning on automatically after payment
 - Owner console: members, Premium count, monthly GCash revenue, give or remove Premium
 - Phone app: a **Get the Neuralix app** button, home-screen icon, full-screen app and an offline screen, ready to turn into an Android APK and Google Play app (step 5)
+- Database in Turso's free cloud, so members, chats and Premium are kept even on Render's free plan (or a local file when you test on your own computer)
 - No packages to install. It runs on Node.js 22.13 or newer.
 
 ---
@@ -58,15 +59,37 @@ When a member pays, PayMongo tells Neuralix and Premium turns on right away: 30 
 
 ## 3. Put it online
 
-**Option 1: Render (easiest)**
+**Option 1: Render's free plan + Turso's free database (recommended, ₱0)**
+
+Render runs Neuralix and Turso keeps its database, so nothing is lost when Render restarts or puts the site to sleep.
+
+*Create the database on Turso*
+
+1. Sign up at **turso.tech**. The free plan needs no credit card.
+2. In the Turso dashboard, create a database, for example `neuralix`. Pick the location closest to your members (for the Philippines, an Asia location).
+3. Open the database and copy its **URL** (it starts with `libsql://`).
+4. Create a **token** for the database and copy it. If Turso asks when the token should expire, choose no expiry. Otherwise Neuralix stops working on that date.
+
+   Prefer the command line? `turso db create neuralix`, then `turso db show neuralix --url` and `turso db tokens create neuralix`.
+
+*Put Neuralix on Render*
 
 1. Upload this folder to a new GitHub repository.
-2. On render.com, create a **Web Service** from that repository.
+2. On render.com, create a **Web Service** from that repository. The **Free** instance type is fine.
 3. Build command: leave empty. Start command: `npm start`.
-4. Add a **persistent disk** mounted at `/var/data`. **Render's free plan can't do this.** On the free plan, every account, chat and Premium payment is erased whenever the site restarts, redeploys or goes to sleep (after 15 minutes without visitors). Use a paid plan with a disk.
-5. Add the settings from `.env.example` as environment variables, with `DATABASE_PATH=/var/data/neuralix.db` and `APP_URL` set to your Render address or your own domain.
+4. Add the settings from `.env.example` as environment variables, including:
+   - `TURSO_DATABASE_URL`: the `libsql://` URL from Turso
+   - `TURSO_AUTH_TOKEN`: the token from Turso
+   - `APP_URL`: your Render address (for example `https://neuralix.onrender.com`) or your own domain
+5. Deploy. Render's **Logs** should show `Database: Turso (...)`. If you see a warning about a local file instead, the two Turso settings are missing. If the server stops with a Turso message, it names the setting to fix.
 
-**Option 2: any VPS with Docker**
+Neuralix creates its tables in Turso by itself the first time it starts. On Render's free plan the site sleeps after 15 minutes without visitors, and the next visitor waits about a minute while it wakes up. Nothing is lost while it sleeps.
+
+**Option 2: Render with a disk (paid, no Turso)**
+
+Leave the Turso settings empty, add a **persistent disk** mounted at `/var/data`, and set `DATABASE_PATH=/var/data/neuralix.db`. Without Turso or a disk, every account, chat and Premium payment is erased whenever the site restarts, redeploys or goes to sleep.
+
+**Option 3: any VPS with Docker**
 
 ```
 cp .env.example .env        # then edit .env
@@ -112,7 +135,7 @@ cp .env.example .env    # set APP_URL=http://localhost:3000 and NODE_ENV=develop
 npm start
 ```
 
-Then open http://localhost:3000.
+Then open http://localhost:3000. Without the Turso settings, the database is a local file, `data/neuralix.db`. With them, your computer uses the same online Turso database as your website.
 
 ## Good to know
 
@@ -120,7 +143,8 @@ Then open http://localhost:3000.
 - Free image uploads reset at midnight Philippine time.
 - Neither plan has a daily message limit. To stop spam bots, Free members can send up to 20 messages a minute and Premium members up to 60 (one per second).
 - When Premium runs out (or you remove it), the member goes back to Free automatically and keeps their chats.
-- Back up the `data` folder (or your persistent disk) regularly. It holds every account, chat and payment.
+- Every account, chat and payment is in your database (Turso, or the local file). Turso keeps it safe across restarts. To keep your own copy too, run `turso db shell neuralix .dump > backup.sql` now and then.
+- Turso's free plan includes 5 GB of storage and 500 million row reads a month, far more than a new chatbot needs.
 - Images are shrunk on the member's phone before upload and are not stored; only the count is saved.
 - Passwords are stored as salted scrypt hashes. Sessions use secure, HTTP-only cookies.
 
@@ -129,7 +153,8 @@ Then open http://localhost:3000.
 | Setting | What it does |
 |---|---|
 | `APP_URL` | Your website address, used for GCash return links |
-| `DATABASE_PATH` | Where the database file is saved |
+| `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` | Your Turso database (`libsql://...`) and its token. Set both to keep the database online. |
+| `DATABASE_PATH` | Local database file, used only when the Turso settings are empty |
 | `ADMIN_EMAILS` | Emails that can open the Owner console |
 | `AI_BASE_URL`, `AI_API_KEY` | Your AI server and its key |
 | `MODEL_CORE`, `MODEL_NOVA`, `MODEL_ULTRA` | Model behind each Neuralix tier |

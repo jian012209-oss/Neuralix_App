@@ -4,7 +4,7 @@ import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { config, MODELS } from "./src/config.js";
-import { q, dayKey } from "./src/db.js";
+import { db, q, dayKey } from "./src/db.js";
 import { createApp, HttpError } from "./src/http.js";
 import { mountAuth, loadUser, requireUser, isPremium, isAdmin } from "./src/auth.js";
 import { mountChat } from "./src/chat.js";
@@ -64,7 +64,8 @@ app.before((req) => {
     throw new HttpError(415, "Requests must be JSON.");
   }
 });
-app.before(loadUser);
+// Look up the logged-in member only for /api requests. The page, icons and app files don't need the database.
+app.before((req) => (req.path.startsWith("/api/") ? loadUser(req) : undefined));
 
 app.get("/healthz", (_req, res) => res.json({ ok: true }));
 
@@ -88,10 +89,10 @@ app.get("/.well-known/assetlinks.json", async (_req, res) => {
 
 mountAuth(app);
 
-app.get("/api/me", requireUser, (req, res) => {
+app.get("/api/me", requireUser, async (req, res) => {
   const u = req.user;
   const premium = isPremium(u);
-  const used = q.usage.get(u.id, dayKey())?.images || 0;
+  const used = (await q.usage.get(u.id, dayKey()))?.images || 0;
   res.json({
     user: { name: u.name, email: u.email, premium, premiumUntil: premium ? u.premium_until : 0, model: u.model, persona: u.persona, isAdmin: isAdmin(u) },
     usage: { imagesToday: used, imageLimit: config.plans.freeImagesPerDay },
@@ -113,7 +114,7 @@ app.patch("/api/me", requireUser, async (req, res) => {
     if (!premium) throw new HttpError(403, "Custom instructions are a Premium feature.", { code: "premium_required" });
     persona = String(body.persona).trim().slice(0, 1500);
   }
-  q.setPrefs.run(model, persona, u.id);
+  await q.setPrefs.run(model, persona, u.id);
   res.json({ ok: true, model, persona });
 });
 
@@ -126,6 +127,10 @@ server.requestTimeout = 0; // chat answers can stream for minutes
 server.headersTimeout = 60000;
 server.listen(config.port, () => {
   console.log(`Neuralix AI running on ${config.appUrl} (port ${config.port})`);
+  console.log(`Database: ${db.backend}`);
+  if (!db.isTurso && config.isProd) {
+    console.log("Warning: the database is a local file. On Render's free plan it is erased on every restart. Set TURSO_DATABASE_URL and TURSO_AUTH_TOKEN.");
+  }
   const m = config.ai.models;
   console.log(`AI server: ${config.ai.baseUrl} · core=${m.core}, nova=${m.nova}, ultra=${m.ultra}${m.vision ? ", vision=" + m.vision : ""}`);
   if (!gcashReady()) console.log("GCash payments are off until PAYMONGO_SECRET_KEY is set.");
