@@ -425,6 +425,113 @@ svg.i{width:18px;height:18px;flex:none;fill:none;stroke:currentColor;stroke-widt
 .spinner{width:46px;height:46px;border-radius:50%;border:3px solid rgba(167,139,250,.2);border-top-color:var(--lilac);animation:spin 1s linear infinite}
 .notice.warn{border-color:rgba(251,191,36,.3);background:rgba(251,191,36,.07)}
 
+/* ---------- Brain knowledge management ---------- */
+async function loadBrainKnowledge() {
+  const list = $("#brainKnowledgeList");
+  const error = $("#brainKnowledgeError");
+
+  list.textContent = "Loading Brain knowledge...";
+  error.textContent = "";
+
+  try {
+    const data = await api("/api/admin/knowledge");
+    const documents = Array.isArray(data.documents) ? data.documents : [];
+
+    list.textContent = "";
+
+    if (!documents.length) {
+      const empty = document.createElement("p");
+      empty.className = "hist-empty";
+      empty.textContent = "No knowledge entries yet. Add your first entry above.";
+      list.append(empty);
+      return;
+    }
+
+    documents.forEach((doc) => {
+      const row = document.createElement("div");
+      row.className = "list-row";
+
+      const main = document.createElement("div");
+      main.className = "l";
+
+      const title = document.createElement("b");
+      title.textContent = doc.title || "Untitled knowledge";
+
+      const details = document.createElement("span");
+      details.textContent =
+        (doc.category || "general") +
+        " · " +
+        (doc.created_at ? fmtTime(doc.created_at) : "Date unavailable");
+
+      const content = document.createElement("p");
+      content.style.whiteSpace = "pre-wrap";
+      content.style.overflowWrap = "anywhere";
+      content.style.color = "var(--ink-2)";
+      content.style.fontSize = "13px";
+      content.style.margin = "8px 0 0";
+      content.textContent = doc.content || "";
+
+      main.append(title, details, content);
+      row.append(main);
+      list.append(row);
+    });
+  } catch (e) {
+    list.textContent = "";
+    const message = document.createElement("p");
+    message.textContent = "Could not load Brain knowledge.";
+    list.append(message);
+
+    if (e.code !== "auth_required") {
+      error.textContent = e.message;
+    }
+  }
+}
+
+async function submitBrainKnowledge(e) {
+  e.preventDefault();
+
+  const title = $("#brainKnowledgeTitle").value.trim();
+  const category = $("#brainKnowledgeCategory").value.trim() || "general";
+  const content = $("#brainKnowledgeContent").value.trim();
+  const error = $("#brainKnowledgeError");
+  const button = $("#brainKnowledgeSave");
+
+  error.textContent = "";
+
+  if (title.length < 2) {
+    error.textContent = "Enter a title with at least 2 characters.";
+    return;
+  }
+
+  if (!content) {
+    error.textContent = "Enter the knowledge content.";
+    return;
+  }
+
+  button.disabled = true;
+  button.textContent = "Saving to Brain...";
+
+  try {
+    await api("/api/admin/knowledge", {
+      method: "POST",
+      body: { title, category, content }
+    });
+
+    $("#brainKnowledgeForm").reset();
+    $("#brainKnowledgeCategory").value = "general";
+
+    toast("Knowledge saved to Neuralix Brain.");
+    await loadBrainKnowledge();
+  } catch (e2) {
+    if (e2.code !== "auth_required") {
+      error.textContent = e2.message;
+    }
+  } finally {
+    button.disabled = false;
+    button.textContent = "Save to Brain";
+  }
+}
+
 /* ---------- standalone site: respect phone notches and home bars ---------- */
 .top{padding-top:calc(12px + env(safe-area-inset-top,0px))}
 .dock{padding-bottom:calc(14px + env(safe-area-inset-bottom,0px))}
@@ -672,7 +779,39 @@ svg.i{width:18px;height:18px;flex:none;fill:none;stroke:currentColor;stroke-widt
     </section>
     <section class="ad-sec" id="adPaySec"><h4>Recent GCash payments (PayMongo)</h4><p>Paid payments turn Premium on automatically.</p><div id="adPayments"></div></section>
     <section class="ad-sec"><h4>Newest members</h4><p>The 50 most recent sign-ups.</p><div id="adUsers"></div></section>
+    <section class="ad-sec" id="brainKnowledgeSec">
+  <h4>Neuralix Brain Knowledge</h4>
+  <p>Add information to Neuralix Brain so it can use that knowledge when answering questions.</p>
+
+  <form id="brainKnowledgeForm" novalidate>
+    <div class="field">
+      <label for="brainKnowledgeTitle">Knowledge title</label>
+      <input id="brainKnowledgeTitle" type="text" maxlength="300" placeholder="Example: Neuralix company information" required>
+    </div>
+
+    <div class="field">
+      <label for="brainKnowledgeCategory">Category</label>
+      <input id="brainKnowledgeCategory" type="text" maxlength="100" value="general" placeholder="general">
+    </div>
+
+    <div class="field">
+      <label for="brainKnowledgeContent">Knowledge content</label>
+      <textarea id="brainKnowledgeContent" maxlength="20000" placeholder="Enter the information Neuralix Brain should learn..." required></textarea>
+    </div>
+
+    <p class="form-err" id="brainKnowledgeError" role="alert"></p>
+
+    <div class="grant-actions">
+      <button class="btn-grad" type="submit" id="brainKnowledgeSave">Save to Brain</button>
+      <button class="btn-line" type="button" id="brainKnowledgeRefresh">Refresh knowledge</button>
+    </div>
+  </form>
+
+  <div id="brainKnowledgeList" aria-live="polite">
+    <p>Knowledge entries will appear here.</p>
   </div>
+</section>
+ </div>
 </div>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
@@ -1255,9 +1394,19 @@ async function watchPayment() {
 
 /* ---------- owner console ---------- */
 async function openAdmin() {
-  closeDrawer(); show("admin");
-  $("#adStats").innerHTML = '<div class="stat"><span>Loading</span><b>…</b></div>';
-  try { renderAdmin(await api("/api/admin/overview")); } catch (e) { if (e.code !== "auth_required") toast(e.message); }
+  closeDrawer();
+  show("admin");
+
+  $("#adStats").innerHTML =
+    '<div class="stat"><span>Loading</span><b>…</b></div>';
+
+  loadBrainKnowledge();
+
+  try {
+    renderAdmin(await api("/api/admin/overview"));
+  } catch (e) {
+    if (e.code !== "auth_required") toast(e.message);
+  }
 }
 function renderAdmin(d) {
   $("#adStats").innerHTML =
@@ -1386,6 +1535,8 @@ $("#personaSave").onclick = async () => {
   catch (e) { toast(e.message); }
 };
 $("#adminLink").onclick = openAdmin;
+$("#brainKnowledgeForm").addEventListener("submit", submitBrainKnowledge);
+$("#brainKnowledgeRefresh").addEventListener("click", loadBrainKnowledge);
 $("#grantForm").addEventListener("submit", (e) => { e.preventDefault(); grant(false); });
 $("#revokeBtn").onclick = () => grant(true);
 $("#logoutBtn").onclick = async () => {
