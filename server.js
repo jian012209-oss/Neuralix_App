@@ -12,6 +12,7 @@ import {
   mountAuth,
   loadUser,
   requireUser,
+  requireAdmin,
   isPremium,
   isAdmin
 } from "./src/auth.js";
@@ -26,7 +27,6 @@ import { mountAdmin } from "./src/admin.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
 
-// Inline script security
 function inlineScriptHashes() {
   try {
     const html = fs.readFileSync(
@@ -107,7 +107,7 @@ app.before((req) => {
   }
 });
 
-// Load authenticated user for API requests
+// Load authenticated user
 app.before((req) =>
   req.path.startsWith("/api/") ? loadUser(req) : undefined
 );
@@ -241,8 +241,6 @@ app.patch("/api/me", requireUser, async (req, res) => {
 // NEURALIX BRAIN CONNECTION
 // ============================================
 
-// Brain API requests are made server-side.
-// Never expose BRAIN_API_KEY to the browser.
 async function brainRequest(pathname, options = {}) {
   if (!config.brain.baseUrl || !config.brain.apiKey) {
     throw new HttpError(
@@ -285,8 +283,11 @@ async function brainRequest(pathname, options = {}) {
   return data;
 }
 
-// Generate memory suggestions.
-// Suggestions are returned for review and are NOT saved automatically.
+// ============================================
+// USER MEMORY
+// ============================================
+
+// Generate memory suggestions
 app.post(
   "/api/memory/suggestions",
   requireUser,
@@ -322,7 +323,7 @@ app.post(
   }
 );
 
-// Get saved memories for the logged-in user
+// Get saved memories
 app.get("/api/memories", requireUser, async (req, res) => {
   const result = await brainRequest(
     "/v1/memory/" +
@@ -332,7 +333,7 @@ app.get("/api/memories", requireUser, async (req, res) => {
   res.json(result);
 });
 
-// Save an approved memory
+// Save a memory
 app.post("/api/memories", requireUser, async (req, res) => {
   const body = await req.json(8000);
   const memory = String(body.memory || "").trim();
@@ -370,7 +371,7 @@ app.post("/api/memories", requireUser, async (req, res) => {
   res.json(result);
 });
 
-// Delete a saved memory belonging to the logged-in user
+// Delete a memory
 app.delete(
   "/api/memories/:id",
   requireUser,
@@ -387,6 +388,74 @@ app.delete(
         "?user_id=" +
         encodeURIComponent(String(req.user.id)),
       { method: "DELETE" }
+    );
+
+    res.json(result);
+  }
+);
+
+// ============================================
+// ADMIN BRAIN KNOWLEDGE MANAGEMENT
+// ============================================
+
+// Shared knowledge collection for Neuralix
+const BRAIN_KNOWLEDGE_USER = "neuralix";
+
+// List Neuralix Brain knowledge
+app.get(
+  "/api/admin/knowledge",
+  requireUser,
+  requireAdmin,
+  async (_req, res) => {
+    const result = await brainRequest(
+      "/v1/knowledge/" +
+      encodeURIComponent(BRAIN_KNOWLEDGE_USER)
+    );
+
+    res.json(result);
+  }
+);
+
+// Add knowledge to Neuralix Brain
+app.post(
+  "/api/admin/knowledge",
+  requireUser,
+  requireAdmin,
+  async (req, res) => {
+    const body = await req.json(24000);
+
+    const title = String(body.title || "").trim();
+    const content = String(body.content || "").trim();
+    const category = String(body.category || "general").trim();
+
+    if (!title || title.length > 300) {
+      throw new HttpError(400, "Invalid knowledge title.");
+    }
+
+    if (!content || content.length > 20000) {
+      throw new HttpError(400, "Invalid knowledge content.");
+    }
+
+    if (category.length > 100) {
+      throw new HttpError(400, "Invalid category.");
+    }
+
+    const result = await brainRequest(
+      "/v1/knowledge",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          user_id: BRAIN_KNOWLEDGE_USER,
+          title,
+          content,
+          category,
+          source: "Neuralix AI Admin",
+          metadata: {
+            created_from: "Neuralix AI",
+            version: "1.0"
+          }
+        })
+      }
     );
 
     res.json(result);
